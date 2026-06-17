@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Thin wrapper so you can "write queries like a CLI" against the runner
+# container. Examples:
+#   ./scripts/de lookup ru.yummyani.me
+#   ./scripts/de run --input /input/domains.txt --db /work/work.db \
+#                    --output /work/enriched.parquet --format both
+#   ./scripts/de fields
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+# Prefer `docker compose`; fall back to legacy `docker-compose`.
+if docker compose version >/dev/null 2>&1; then
+  COMPOSE=(docker compose)
+else
+  COMPOSE=(docker-compose)
+fi
+
+mkdir -p data work input
+exec "${COMPOSE[@]}" run --rm runner "$@"

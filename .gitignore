@@ -1,0 +1,21 @@
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+*.db
+*.db-wal
+*.db-shm
+*.parquet
+*.csv
+!tests/**/*.csv
+
+# offline bundle + mounted data / work / input (keep the skeleton .gitkeep files)
+dist/
+/data/**
+/work/**
+/input/**
+!/data/**/.gitkeep
+!/work/.gitkeep
+!/input/.gitkeep

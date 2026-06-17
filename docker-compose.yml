@@ -1,0 +1,40 @@
+# Runner service for domain-enrich.
+#
+#   data/   (read-only)  -> /data    all offline databases live here
+#   work/                -> /work    SQLite working DB + output tables
+#   input/               -> /input   your domain lists
+#
+# Usage (the entrypoint is the CLI, so just append CLI args):
+#   docker compose run --rm runner lookup ru.yummyani.me
+#   docker compose run --rm runner run --input /input/domains.txt \
+#       --db /work/work.db --output /work/enriched.parquet --format both
+#
+# Source paths are injected via DE_* env vars below, so for `run` you usually
+# only pass --input/--db/--output.
+services:
+  runner:
+    image: domain-enrich:latest
+    build:
+      context: .
+    # Hard guarantee of offline operation: the container has no network at all.
+    network_mode: "none"
+    volumes:
+      - ./data:/data:ro
+      - ./work:/work
+      - ./input:/input
+    environment:
+      DE_BRNO_DIR: /data/brno
+      DE_RAPID7_FDNS: /data/fdns.json.gz
+      DE_MAXMIND_CITY: /data/GeoLite2-City.mmdb
+      DE_MAXMIND_ASN: /data/GeoLite2-ASN.mmdb
+      DE_RIR_DUMP: /data/rir
+      DE_RDNS_DUMP: /data/rdns.json.gz
+      DE_TRANCO: /data/popularity        # dir -> Tranco+Umbrella+Majestic+DomCop
+      DE_BLOCKLIST: /data/blocklists
+      DE_RDAP_DUMP: /data/rdap
+      DE_ZONE: /data/zones
+      DE_IPTHREAT: /data/ipthreat
+      DE_PEERINGDB: /data/peeringdb_net.json
+      DE_CT_DUMP: /data/ct
+    # No long-running process; this is a one-shot CLI runner.
+    restart: "no"

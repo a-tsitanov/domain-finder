@@ -1,0 +1,8 @@
+click>=8.1
+ijson>=3.2          # streaming of large JSON arrays (Brno)
+geoip2>=4.7         # MaxMind .mmdb
+pandas>=2.0
+pyarrow>=14.0       # parquet
+idna>=3.4           # IDN -> punycode
+tqdm>=4.66
+# requests          # only if optional auto-download of blocklists is added
