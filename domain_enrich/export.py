@@ -31,6 +31,9 @@ FLAT_FIELDS: List[str] = [
     "domain_status", "dnssec", "nameservers",
     # Threat
     "threat_label", "threat_type", "threat_sources",
+    # Rendered page (online mode) — metadata only, no HTML
+    "page_path", "page_http_status", "page_final_url", "page_bytes",
+    "page_fetched_at", "page_error",
 ]
 
 _LIST_COLUMNS = ("a", "aaaa", "ns", "mx", "txt", "cname", "ptr", "ips", "nameservers")
@@ -109,7 +112,9 @@ def flatten_row(row: Dict) -> Dict:
                 "created_date", "updated_date", "expires_date",
                 "registrant_org", "registrant_country", "abuse_email",
                 "domain_status", "dnssec",
-                "threat_label", "threat_type", "threat_sources"):
+                "threat_label", "threat_type", "threat_sources",
+                "page_path", "page_http_status", "page_final_url",
+                "page_bytes", "page_fetched_at", "page_error"):
         flat[col] = row.get(col)
 
     return flat

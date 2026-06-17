@@ -295,33 +295,53 @@ def _expand_paths(value):
 @click.option("--ct-dump", multiple=True, envvar="DE_CT_DUMP", type=click.Path())
 @click.option("--json", "as_json", is_flag=True, help="Emit a JSON object.")
 @click.option("--compact", is_flag=True, help="Hide empty fields/sections.")
+@click.option("--online", "online", is_flag=True, default=False,
+              help="Live lookup (DNS/RDAP/TLS/geo/threat) instead of offline join.")
+@click.option("--render", "render", is_flag=True, default=False,
+              help="With --online: also download the rendered page into the JSON.")
+@click.option("--abuse-key", envvar="DE_ABUSECH_KEY", default=None)
+@click.option("--cf-token", envvar="DE_CF_RADAR_TOKEN", default=None)
 def lookup(domain, brno_dir, rapid7_fdns, maxmind_city, maxmind_asn, rir_dump,
            rdns_dump, blocklist, tranco, rdap_dump, zone, ipthreat, peeringdb,
-           ct_dump, as_json, compact):
+           ct_dump, as_json, compact, online, render, abuse_key, cf_token):
     """Enrich a SINGLE domain and print a Domain-Dossier-style report.
 
     Source paths default to the DE_* environment variables, so inside the
     runner container you only type:  domain-enrich lookup example.com
+
+    With --online the dossier is built from live services instead of offline
+    dumps; add --render to also fetch the rendered page (kept out of the table
+    view, present in --json output).
     """
     import json as _json
-    row = pipeline.lookup_domain(
-        domain,
-        brno_dir=_expand_paths(brno_dir),
-        rapid7_fdns=rapid7_fdns,
-        maxmind_city=maxmind_city,
-        maxmind_asn=maxmind_asn,
-        rir_dump=_expand_paths(rir_dump),
-        rdns_dump=rdns_dump,
-        blocklist=_expand_paths(blocklist),
-        tranco=tranco,
-        rdap_dump=_expand_paths(rdap_dump),
-        zone=_expand_paths(zone),
-        ipthreat=_expand_paths(ipthreat),
-        peeringdb=peeringdb,
-        ct_dump=_expand_paths(ct_dump),
-    )
+    if online:
+        from .online.runner import lookup_online_sync
+        row = lookup_online_sync(
+            domain, maxmind_city=maxmind_city, maxmind_asn=maxmind_asn,
+            abuse_key=abuse_key, cf_token=cf_token, do_render=render,
+        )
+    else:
+        row = pipeline.lookup_domain(
+            domain,
+            brno_dir=_expand_paths(brno_dir),
+            rapid7_fdns=rapid7_fdns,
+            maxmind_city=maxmind_city,
+            maxmind_asn=maxmind_asn,
+            rir_dump=_expand_paths(rir_dump),
+            rdns_dump=rdns_dump,
+            blocklist=_expand_paths(blocklist),
+            tranco=tranco,
+            rdap_dump=_expand_paths(rdap_dump),
+            zone=_expand_paths(zone),
+            ipthreat=_expand_paths(ipthreat),
+            peeringdb=peeringdb,
+            ct_dump=_expand_paths(ct_dump),
+        )
     if row is None:
         raise click.ClickException(f"could not enrich {domain!r}")
+    if online and not as_json:
+        # The rendered HTML is large; never dump it into the table view.
+        row = {k: v for k, v in row.items() if k != "page_html"}
     if as_json:
         click.echo(_json.dumps(row, ensure_ascii=False, indent=2))
         return
@@ -336,6 +356,55 @@ def lookup(domain, brno_dir, rapid7_fdns, maxmind_city, maxmind_asn, rir_dump,
         click.echo(f"\n=== {title} ===")
         for k, v in rows:
             click.echo(f"  {k:18}: {'·' if v in (None, '') else v}")
+
+
+@cli.command(name="run-online")
+@click.option("--input", "input_path", type=click.Path(exists=True),
+              help="Domain list (one per line). Omit to resume an existing db.")
+@_db_opt
+@click.option("--dossier-dir", envvar="DE_DOSSIER_DIR", default="dossiers",
+              type=click.Path(), show_default=True,
+              help="Where to write <domain>.dossier.gz (report + rendered page).")
+@click.option("--output", type=click.Path(), default=None,
+              help="Aggregate parquet/CSV index (no page_html). Optional.")
+@click.option("--format", "fmt", type=click.Choice(["parquet", "csv", "both"]),
+              default="both", show_default=True)
+@click.option("--fields", default=None, help="Comma-separated aggregate fields.")
+@click.option("--concurrency", default=50, show_default=True,
+              help="Concurrent domain workers (network-bound).")
+@click.option("--render-concurrency", default=8, show_default=True,
+              help="Concurrent Playwright pages (RAM-bound).")
+@click.option("--no-render", is_flag=True, default=False,
+              help="Skip the Playwright page download.")
+@click.option("--maxmind-city", envvar="DE_MAXMIND_CITY", type=click.Path())
+@click.option("--maxmind-asn", envvar="DE_MAXMIND_ASN", type=click.Path())
+@click.option("--ipthreat", multiple=True, envvar="DE_IPTHREAT", type=click.Path(),
+              help="IP/CIDR threat feeds (Feodo/SSLBL/Spamhaus) for IP matching.")
+@click.option("--abuse-key", envvar="DE_ABUSECH_KEY", default=None,
+              help="abuse.ch Auth-Key (URLhaus/ThreatFox). Omit -> threat skipped.")
+@click.option("--cf-token", envvar="DE_CF_RADAR_TOKEN", default=None,
+              help="Cloudflare Radar token (popularity). Omit -> skipped.")
+@click.option("--force", multiple=True,
+              help="Re-run an online stage (e.g. --force online, --force render).")
+def run_online_cmd(input_path, db, dossier_dir, output, fmt, fields, concurrency,
+                   render_concurrency, no_render, maxmind_city, maxmind_asn,
+                   ipthreat, abuse_key, cf_token, force):
+    """Online (live) enrichment: live DNS/RDAP/TLS/geo/threat + Playwright page.
+
+    Writes one <domain>.dossier.gz per domain (report + rendered HTML) and an
+    optional aggregate table. Fully async and resumable.
+    """
+    from .online.runner import run_online_sync
+    run_online_sync(
+        input_path, db, dossier_dir, output,
+        fmt=fmt, fields=_split_fields(fields),
+        concurrency=concurrency, render_concurrency=render_concurrency,
+        do_render=not no_render,
+        maxmind_city=maxmind_city, maxmind_asn=maxmind_asn,
+        abuse_key=abuse_key, cf_token=cf_token,
+        ipthreat_paths=_expand_paths(ipthreat) if ipthreat else None,
+        force=set(force),
+    )
 
 
 @cli.command(name="fields")

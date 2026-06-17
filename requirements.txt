@@ -5,4 +5,7 @@ pandas>=2.0
 pyarrow>=14.0       # parquet
 idna>=3.4           # IDN -> punycode
 tqdm>=4.66
-# requests          # only if optional auto-download of blocklists is added
+dnspython>=2.4      # live DNS resolution (online mode)
+# Online mode extras (pip install -e '.[online]'):
+# httpx>=0.27       # async HTTP (RDAP / ip-api / abuse.ch / Cloudflare)
+# playwright>=1.44  # headless-browser page rendering (+ playwright install chromium)

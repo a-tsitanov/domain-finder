@@ -253,9 +253,93 @@ Tests cover normalization, the blocklist parser (hosts/CSV/plain), MongoDB
 Extended-JSON unwrap, the store's COALESCE/resume semantics, each source
 adapter, export, and a full mini end-to-end run including cross-process resume.
 
+## Online mode (live enrichment + page download)
+
+The offline mode joins against pre-downloaded dumps. **Online mode** does the
+same enrichment with **live, free services** — no datasets to download — and
+additionally **downloads each domain's rendered page** with a headless browser
+(Playwright). It is fully **async** for high throughput and **resumable** just
+like the offline pipeline.
+
+```
+[normalize] -> per-domain async workers:
+   dns(live) -> tls(handshake) -> rdap(domain whois) -> geo/ASN
+            -> netwhois(IP RDAP) -> threat(abuse.ch) -> popularity -> render
+   -> write <domain>.dossier.gz  +  aggregate parquet/CSV index
+```
+
+### Sources (all free)
+
+| Group | Online tool | Key |
+|---|---|---|
+| DNS (A/AAAA/NS/MX/TXT/CNAME/SOA + PTR) | live resolve (dnspython async) | — |
+| TLS (cipher/protocol/SANs) | live TLS handshake | — |
+| Domain whois | RDAP via `rdap.org/domain/<d>` | — |
+| Network whois | RDAP via `rdap.org/ip/<ip>` (ARIN/RIPE/APNIC) | — |
+| GeoIP + ASN | MaxMind `.mmdb` (fast path) or **ip-api.com** (45/min) | — |
+| Threat | URLhaus + ThreatFox APIs; IP/CIDR feeds | abuse.ch (free) |
+| Popularity | Cloudflare Radar | CF token |
+| **Rendered page** | **Playwright** (headless Chromium) | — |
+
+DNS/RDAP/TLS are effectively unlimited; the binding limits are **ip-api
+(45/min)** and **Playwright RAM**. The biggest speed lever is **caching IP- and
+ASN-keyed lookups** (a network shared by many domains is fetched once).
+
+### Install
+
+```bash
+pip install -e '.[online]'
+python -m playwright install chromium   # one-time browser download
+```
+
+### Usage
+
+```bash
+domain-enrich run-online \
+  --input domains.txt \
+  --db work.db \
+  --dossier-dir dossiers \
+  --output agg.parquet --format both \
+  --concurrency 100 --render-concurrency 12 \
+  --maxmind-city ./GeoLite2-City.mmdb --maxmind-asn ./GeoLite2-ASN.mmdb \
+  --ipthreat ./ipthreat --abuse-key "$DE_ABUSECH_KEY"
+```
+
+- **Per-domain artifact:** `dossiers/<domain>.dossier.gz` — a single gzip(JSON)
+  with every enrichment field **plus** the rendered `page_html` and `page_*`
+  metadata. Self-contained.
+- **Aggregate index:** `--output` writes the same flat parquet/CSV table as the
+  offline mode (without `page_html`, with `page_*` columns).
+- **Resumable:** kill anytime and re-run — finished domains (dossier present /
+  `s_render` set) are skipped. `--force online` (or `--force render`) reprocesses.
+- `--no-render` skips the page download (enrichment only).
+- Keys are optional: omit `--abuse-key`/`--cf-token` and those stages skip.
+  Without `--maxmind-*`, geo falls back to ip-api (rate-limited).
+
+Single live dossier (no files):
+
+```bash
+domain-enrich lookup --online example.com            # live, all sections
+domain-enrich lookup --online --render example.com --json   # include page_html
+```
+
+### Containerized online runner
+
+A separate, network-enabled service built on the Playwright image (the offline
+`runner` stays `network_mode: none`):
+
+```bash
+docker compose --profile online build runner-online
+./scripts/de-online run-online --input /input/domains.txt \
+    --db /work/work.db --dossier-dir /work/dossiers \
+    --output /work/agg.parquet --concurrency 100 --render-concurrency 12
+./scripts/de-online lookup --online --render example.com --json
+```
+
 ## Possible extensions (not in v1)
 
 - Optional `live resolve` stage (dnsx/massdns) for unmatched domains.
 - Optional CT-log source for TLS where Brno has no coverage.
 - Thin FastAPI facade (upload → background job → status/download).
 - Scheduled auto-download/refresh of blocklists.
+- LLM content analysis over the rendered page (intentionally out of scope now).

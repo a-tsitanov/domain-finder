@@ -22,6 +22,7 @@
 12. [Постадийный CLI, резюмируемость, `--force`](#12-постадийный-cli-резюмируемость---force)
 13. [Запуск без Docker (venv)](#13-запуск-без-docker-venv)
 14. [Диагностика проблем](#14-диагностика-проблем)
+15. [Online-режим (live + рендер страницы)](#15-online-режим-live--рендер-страницы)
 
 ---
 
@@ -340,6 +341,101 @@ domain-enrich lookup essex.ac.uk
 | повторный запуск ничего не меняет | стадии уже `done`; используй `--force STAGE` |
 | Brno докачался не целиком | пайплайн толерантен к обрыву (обработает прочитанное); докачай `curl -C -` и перезапусти `--force brno` |
 | `domain-enrich lookup` медленный | он стримит весь Brno на 1 домен; для массовой обработки используй `run` (фикс-косты амортизируются) |
+
+---
+
+## 15. Online-режим (live + рендер страницы)
+
+Offline-режим джойнит домены с заранее скачанными дампами. **Online-режим**
+делает ту же обработку **живыми бесплатными запросами** (скачивать базы не
+нужно) и дополнительно **выкачивает отрендеренную страницу** каждого домена
+через headless-браузер (Playwright). Полностью **асинхронный** (высокая
+скорость) и **резюмируемый**, как offline.
+
+### Чем отличается от offline
+
+| | offline | online |
+|---|---|---|
+| Источник данных | скачанные дампы (Brno/RIR/…) | живые сервисы |
+| Сеть | запрещена (`network_mode: none`) | нужна |
+| Артефакт | плоская таблица | `<domain>.dossier.gz` (отчёт + HTML) + сводная таблица |
+| Страница сайта | нет | да, Playwright (полный DOM после JS) |
+| Скорость | I/O дампов | async, упор в rate-limit/RAM |
+
+### Источники (все бесплатные)
+
+| Группа | Инструмент | Ключ |
+|---|---|---|
+| DNS (A/AAAA/NS/MX/TXT/CNAME/SOA + PTR) | live-резолв (dnspython async) | — |
+| TLS (cipher/protocol/SANs) | live TLS-handshake | — |
+| Domain whois | RDAP `rdap.org/domain/<d>` | — |
+| Network whois | RDAP `rdap.org/ip/<ip>` (ARIN/RIPE/APNIC) | — |
+| GeoIP + ASN | MaxMind `.mmdb` (быстро) или **ip-api.com** (45/мин) | — |
+| Threat | URLhaus + ThreatFox API; IP/CIDR-фиды | abuse.ch (бесплатно) |
+| Popularity | Cloudflare Radar | CF token |
+| **Страница** | **Playwright** (headless Chromium) | — |
+
+DNS/RDAP/TLS почти безлимитны; узкие места — **ip-api (45/мин)** и **RAM
+Playwright**. Главный рычаг скорости — **кэш запросов по IP/ASN** (сеть,
+общая для многих доменов, запрашивается один раз).
+
+### Установка
+
+```bash
+pip install -e '.[online]'
+python -m playwright install chromium   # один раз скачать браузер
+```
+
+### Запуск (батч)
+
+```bash
+domain-enrich run-online \
+  --input domains.txt --db work.db \
+  --dossier-dir dossiers --output agg.parquet --format both \
+  --concurrency 100 --render-concurrency 12 \
+  --maxmind-city ./GeoLite2-City.mmdb --maxmind-asn ./GeoLite2-ASN.mmdb \
+  --ipthreat ./ipthreat --abuse-key "$DE_ABUSECH_KEY"
+```
+
+- `dossiers/<domain>.dossier.gz` — `gzip(JSON)`: все поля enrichment **+**
+  `page_html` **+** мета страницы (`page_path/page_http_status/page_final_url/`
+  `page_bytes/page_fetched_at/page_error`). Самодостаточный файл.
+- `--output` — сводная плоская таблица (как в offline), **без** `page_html`.
+- Резюмируемость: убей и перезапусти — готовые домены (есть dossier / `s_render`)
+  пропускаются. `--force online` (или `--force render`) — переобработать.
+- `--no-render` — только enrichment, без скачивания страницы.
+- Ключи опциональны: без `--abuse-key`/`--cf-token` эти стадии просто
+  пропускаются. Без `--maxmind-*` гео берётся из ip-api (с rate-limit).
+
+### Одно живое досье (без файлов)
+
+```bash
+domain-enrich lookup --online example.com               # все секции, живьём
+domain-enrich lookup --online --render example.com --json   # + page_html в JSON
+```
+
+### Docker (отдельный сетевой сервис)
+
+Offline-`runner` остаётся `network_mode: none`; online — отдельный сервис на
+Playwright-образе **с сетью**:
+
+```bash
+docker compose --profile online build runner-online
+./scripts/de-online run-online --input /input/domains.txt \
+    --db /work/work.db --dossier-dir /work/dossiers \
+    --output /work/agg.parquet --concurrency 100 --render-concurrency 12
+./scripts/de-online lookup --online --render example.com --json
+```
+
+### Диагностика online
+
+| Симптом | Причина / решение |
+|---|---|
+| гео пустое / медленно | без MaxMind гео идёт через ip-api (45/мин); дай `--maxmind-*` |
+| threat всегда пусто | нет `--abuse-key` (бесплатный на auth.abuse.ch) — стадия пропущена |
+| `page_error` у многих | сайт недоступен/таймаут; подними `--render-concurrency` осторожно (RAM) |
+| Playwright «unavailable» | не выполнен `python -m playwright install chromium` |
+| RDAP пусто у части доменов | у некоторых TLD нет публичного RDAP — это нормально |
 
 ---
 

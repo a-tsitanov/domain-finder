@@ -38,3 +38,32 @@ services:
       DE_CT_DUMP: /data/ct
     # No long-running process; this is a one-shot CLI runner.
     restart: "no"
+
+  # Online runner: LIVE enrichment + Playwright page download. Needs network
+  # access (the opposite of the offline runner). Writes one <domain>.dossier.gz
+  # per domain under /work/dossiers plus an optional aggregate table.
+  #
+  #   docker compose --profile online build runner-online
+  #   docker compose --profile online run --rm runner-online run-online \
+  #       --input /input/domains.txt --db /work/work.db \
+  #       --dossier-dir /work/dossiers --output /work/agg.parquet \
+  #       --concurrency 100 --render-concurrency 12
+  runner-online:
+    image: domain-enrich-online:latest
+    profiles: ["online"]
+    build:
+      context: .
+      dockerfile: Dockerfile.online
+    volumes:
+      - ./data:/data:ro           # optional MaxMind .mmdb / ipthreat feeds
+      - ./work:/work
+      - ./input:/input
+    environment:
+      DE_DOSSIER_DIR: /work/dossiers
+      DE_MAXMIND_CITY: /data/GeoLite2-City.mmdb
+      DE_MAXMIND_ASN: /data/GeoLite2-ASN.mmdb
+      DE_IPTHREAT: /data/ipthreat
+      # Optional free keys; leave unset to skip those stages.
+      DE_ABUSECH_KEY: "${DE_ABUSECH_KEY:-}"
+      DE_CF_RADAR_TOKEN: "${DE_CF_RADAR_TOKEN:-}"
+    restart: "no"

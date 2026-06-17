@@ -1,0 +1,34 @@
+# Online runner image for domain-enrich.
+#
+# Unlike the offline runner (network_mode: none), the online mode performs LIVE
+# lookups and renders pages with a headless browser, so it needs network access
+# and a bundled Chromium. Built on the official Playwright Python image, which
+# ships the browser and its system libraries.
+FROM mcr.microsoft.com/playwright/python:v1.44.0-jammy AS base
+
+ENV PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+WORKDIR /app
+
+# Install the package plus the online extras (httpx + playwright).
+COPY pyproject.toml README.md ./
+COPY domain_enrich ./domain_enrich
+RUN pip install '.[online]'
+
+# Make sure the Chromium that matches the installed Playwright is present.
+RUN python -m playwright install chromium
+
+RUN mkdir -p /work /input /work/dossiers
+
+# Online defaults. GeoIP can still use a mounted MaxMind .mmdb for the no-rate-
+# limit fast path; otherwise geo falls back to ip-api (45/min).
+ENV DE_DOSSIER_DIR=/work/dossiers \
+    DE_MAXMIND_CITY=/data/GeoLite2-City.mmdb \
+    DE_MAXMIND_ASN=/data/GeoLite2-ASN.mmdb \
+    DE_IPTHREAT=/data/ipthreat
+# DE_ABUSECH_KEY / DE_CF_RADAR_TOKEN are supplied per deployment (optional).
+
+ENTRYPOINT ["domain-enrich"]
+CMD ["--help"]

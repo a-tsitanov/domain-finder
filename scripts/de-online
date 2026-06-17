@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Thin wrapper for the ONLINE runner container (live enrichment + Playwright
+# page download). Mirrors scripts/de but targets the network-enabled service.
+# Examples:
+#   ./scripts/de-online lookup --online --render example.com --json
+#   ./scripts/de-online run-online --input /input/domains.txt \
+#        --db /work/work.db --dossier-dir /work/dossiers \
+#        --output /work/agg.parquet --concurrency 100 --render-concurrency 12
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+if docker compose version >/dev/null 2>&1; then
+  COMPOSE=(docker compose --profile online)
+else
+  COMPOSE=(docker-compose --profile online)
+fi
+
+mkdir -p data work input work/dossiers
+exec "${COMPOSE[@]}" run --rm runner-online "$@"

@@ -19,7 +19,10 @@ from typing import Dict, Iterable, Iterator, List, Optional, Tuple
 # Per-row "stage done" flag columns.
 ROW_FLAGS = ("s_brno", "s_rapid7", "s_geo", "s_threat", "s_tranco",
              "s_rdns", "s_rdap", "s_netwhois", "s_ipthreat", "s_peeringdb",
-             "s_ct", "s_zone")
+             "s_ct", "s_zone",
+             # online (live) stages
+             "s_odns", "s_otls", "s_ordap", "s_onet", "s_ogeo",
+             "s_othreat", "s_opop", "s_render")
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS domains (
@@ -76,6 +79,13 @@ CREATE TABLE IF NOT EXISTS domains (
     net_org          TEXT,
     net_country      TEXT,
     net_abuse_email  TEXT,
+    -- Rendered page (online mode): metadata only; HTML lives on disk/dossier
+    page_path         TEXT,
+    page_http_status  INTEGER,
+    page_final_url    TEXT,
+    page_bytes        INTEGER,
+    page_fetched_at   TEXT,
+    page_error        TEXT,
     -- per-row stage flags
     s_brno        INTEGER NOT NULL DEFAULT 0,
     s_rapid7      INTEGER NOT NULL DEFAULT 0,
@@ -88,7 +98,15 @@ CREATE TABLE IF NOT EXISTS domains (
     s_ipthreat    INTEGER NOT NULL DEFAULT 0,
     s_peeringdb   INTEGER NOT NULL DEFAULT 0,
     s_ct          INTEGER NOT NULL DEFAULT 0,
-    s_zone        INTEGER NOT NULL DEFAULT 0
+    s_zone        INTEGER NOT NULL DEFAULT 0,
+    s_odns        INTEGER NOT NULL DEFAULT 0,
+    s_otls        INTEGER NOT NULL DEFAULT 0,
+    s_ordap       INTEGER NOT NULL DEFAULT 0,
+    s_onet        INTEGER NOT NULL DEFAULT 0,
+    s_ogeo        INTEGER NOT NULL DEFAULT 0,
+    s_othreat     INTEGER NOT NULL DEFAULT 0,
+    s_opop        INTEGER NOT NULL DEFAULT 0,
+    s_render      INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS meta (
@@ -112,6 +130,14 @@ CREATE INDEX IF NOT EXISTS idx_s_ipthreat ON domains(s_ipthreat);
 CREATE INDEX IF NOT EXISTS idx_s_peeringdb ON domains(s_peeringdb);
 CREATE INDEX IF NOT EXISTS idx_s_ct ON domains(s_ct);
 CREATE INDEX IF NOT EXISTS idx_s_zone ON domains(s_zone);
+CREATE INDEX IF NOT EXISTS idx_s_odns ON domains(s_odns);
+CREATE INDEX IF NOT EXISTS idx_s_otls ON domains(s_otls);
+CREATE INDEX IF NOT EXISTS idx_s_ordap ON domains(s_ordap);
+CREATE INDEX IF NOT EXISTS idx_s_onet ON domains(s_onet);
+CREATE INDEX IF NOT EXISTS idx_s_ogeo ON domains(s_ogeo);
+CREATE INDEX IF NOT EXISTS idx_s_othreat ON domains(s_othreat);
+CREATE INDEX IF NOT EXISTS idx_s_opop ON domains(s_opop);
+CREATE INDEX IF NOT EXISTS idx_s_render ON domains(s_render);
 """
 
 # (column, SQL type/default) for columns that may be missing in older DBs.
@@ -126,6 +152,9 @@ _MIGRATE_COLUMNS = [
     ("net_range", "TEXT"), ("net_name", "TEXT"), ("net_org", "TEXT"),
     ("net_country", "TEXT"), ("net_abuse_email", "TEXT"),
     ("asn_type", "TEXT"), ("san", "TEXT"),
+    ("page_path", "TEXT"), ("page_http_status", "INTEGER"),
+    ("page_final_url", "TEXT"), ("page_bytes", "INTEGER"),
+    ("page_fetched_at", "TEXT"), ("page_error", "TEXT"),
     ("s_tranco", "INTEGER NOT NULL DEFAULT 0"),
     ("s_rdns", "INTEGER NOT NULL DEFAULT 0"),
     ("s_rdap", "INTEGER NOT NULL DEFAULT 0"),
@@ -134,6 +163,14 @@ _MIGRATE_COLUMNS = [
     ("s_peeringdb", "INTEGER NOT NULL DEFAULT 0"),
     ("s_ct", "INTEGER NOT NULL DEFAULT 0"),
     ("s_zone", "INTEGER NOT NULL DEFAULT 0"),
+    ("s_odns", "INTEGER NOT NULL DEFAULT 0"),
+    ("s_otls", "INTEGER NOT NULL DEFAULT 0"),
+    ("s_ordap", "INTEGER NOT NULL DEFAULT 0"),
+    ("s_onet", "INTEGER NOT NULL DEFAULT 0"),
+    ("s_ogeo", "INTEGER NOT NULL DEFAULT 0"),
+    ("s_othreat", "INTEGER NOT NULL DEFAULT 0"),
+    ("s_opop", "INTEGER NOT NULL DEFAULT 0"),
+    ("s_render", "INTEGER NOT NULL DEFAULT 0"),
 ]
 
 
@@ -380,6 +417,29 @@ class Store:
             WHERE domain = ?
             """,
             (net_range, net_name, net_org, net_country, net_abuse_email, domain),
+        )
+
+    def update_page(self, domain, page_path=None, page_http_status=None,
+                    page_final_url=None, page_bytes=None, page_fetched_at=None,
+                    page_error=None) -> None:
+        """Record rendered-page metadata (online ``render`` stage).
+
+        Unlike the COALESCE writers, a re-render overwrites: the latest fetch is
+        authoritative (a previous run may have only stored an error).
+        """
+        self.conn.execute(
+            """
+            UPDATE domains SET
+                page_path        = ?,
+                page_http_status = ?,
+                page_final_url   = ?,
+                page_bytes       = ?,
+                page_fetched_at  = ?,
+                page_error       = ?
+            WHERE domain = ?
+            """,
+            (page_path, page_http_status, page_final_url, page_bytes,
+             page_fetched_at, page_error, domain),
         )
 
     # -- per-row stage flags --------------------------------------------
