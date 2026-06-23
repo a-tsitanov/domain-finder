@@ -75,7 +75,8 @@ def _build_raw_row(domain, original, dns, tls, geo, net, rdap, threat, pop,
 async def _process_domain(domain, original, *, client, resolver, browser,
                           city_reader, asn_reader, geo_cache, net_cache,
                           ip_matcher, abuse_key, cf_token, do_render,
-                          dossier_dir, limiters, render_sem) -> dict:
+                          dossier_dir, limiters, render_sem,
+                          proxy_provider=None, max_proxy_attempts=25) -> dict:
     """Run the full live chain for one domain; return its flat dossier record."""
     dns = await dns_live.resolve(domain, resolver)
     ips: List[str] = list(dns.get("ips") or [])
@@ -109,7 +110,9 @@ async def _process_domain(domain, original, *, client, resolver, browser,
     page: dict = {}
     if do_render and browser is not None:
         async with render_sem:
-            page = await render_mod.render_page(browser, domain)
+            page = await render_mod.render_page(
+                browser, domain, proxy_provider=proxy_provider,
+                max_proxy_attempts=max_proxy_attempts)
 
     page_html = page.pop("page_html", None) if page else None
     page_meta = {k: page.get(k) for k in _PAGE_META}
@@ -120,6 +123,7 @@ async def _process_domain(domain, original, *, client, resolver, browser,
                          pop, page_meta)
     record = flatten_row(raw)
     record["page_html"] = page_html
+    record["page_proxy"] = page.get("page_proxy") if page else None
 
     # Persist updates (buffered) — capture values for the writer thread.
     def db_op(store, d=domain, dns=dns, tls=tls, geo=geo, net=net, rdap=rdap,
@@ -166,6 +170,7 @@ async def run_online(
     ipapi_rate: float = 45.0,
     # Injectable deps (tests / advanced use):
     client=None, resolver=None, browser=None,
+    proxy_provider=None, max_proxy_attempts: int = 25,
     write_batch: int = 500,
 ) -> dict:
     force = set(force or [])
@@ -246,7 +251,11 @@ async def run_online(
         try:
             from playwright.async_api import async_playwright
             pw = await async_playwright().start()
-            browser = await pw.chromium.launch(headless=True)
+            launch_kwargs = {"headless": True}
+            if proxy_provider is not None:
+                await proxy_provider.ensure_loaded()
+                launch_kwargs["proxy"] = {"server": "per-context"}
+            browser = await pw.chromium.launch(**launch_kwargs)
             own_browser = True
         except Exception as exc:  # noqa: BLE001
             _log(f"[online] Playwright unavailable ({exc}); rendering disabled")
@@ -273,7 +282,8 @@ async def run_online(
                     net_cache=net_cache, ip_matcher=ip_matcher,
                     abuse_key=abuse_key, cf_token=cf_token, do_render=do_render,
                     dossier_dir=dossier_dir, limiters=limiters,
-                    render_sem=render_sem)
+                    render_sem=render_sem, proxy_provider=proxy_provider,
+                    max_proxy_attempts=max_proxy_attempts)
                 if dossier_dir:
                     await asyncio.to_thread(write_dossier, dossier_dir, domain,
                                             res["record"])
@@ -338,6 +348,7 @@ async def _finish(writer: AsyncWriter, output, fields, fmt) -> dict:
 # -- single-domain live dossier (lookup --online) ------------------------
 async def lookup_online(domain: str, *, maxmind_city=None, maxmind_asn=None,
                         abuse_key=None, cf_token=None, do_render=False,
+                        proxy_provider=None, max_proxy_attempts=25,
                         client=None, resolver=None, browser=None) -> dict:
     """Enrich one domain live and return its flat record (no files written)."""
     from ..normalize import normalize_domain
@@ -367,7 +378,8 @@ async def lookup_online(domain: str, *, maxmind_city=None, maxmind_asn=None,
             geo_cache=AsyncCache(), net_cache=AsyncCache(), ip_matcher=None,
             abuse_key=abuse_key, cf_token=cf_token, do_render=do_render,
             dossier_dir=None, limiters=limiters,
-            render_sem=asyncio.Semaphore(1))
+            render_sem=asyncio.Semaphore(1), proxy_provider=proxy_provider,
+            max_proxy_attempts=max_proxy_attempts)
         return res["record"]
     finally:
         for r in (city_reader, asn_reader):

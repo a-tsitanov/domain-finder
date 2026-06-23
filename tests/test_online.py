@@ -457,3 +457,21 @@ async def test_render_stops_when_proxy_pool_exhausted():
         proxy_provider=prov, max_proxy_attempts=25, log=logs.append)
     assert out["page_html"] is None
     assert prov.handed == 3   # ran out before hitting 25
+
+
+async def test_run_online_uses_proxy_when_direct_render_fails(tmp_path):
+    inp = tmp_path / "domains.txt"
+    inp.write_text("example.com\n")
+    db = str(tmp_path / "work.db")
+    dossiers = str(tmp_path / "dossiers")
+
+    prov = StubProvider()
+    async with mock_client(_e2e_handler) as client:
+        await run_online(
+            str(inp), db, dossiers, None, do_render=True,
+            client=client, resolver=_resolver(),
+            browser=ProxyFallbackBrowser("<p>proxied</p>"),
+            proxy_provider=prov)
+    d = dossier.read_dossier(os.path.join(dossiers, "example.com.dossier.gz"))
+    assert d["page_html"] == "<p>proxied</p>"
+    assert d["page_proxy"] == "socks5://10.0.0.1:1080"
