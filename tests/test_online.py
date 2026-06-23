@@ -74,6 +74,51 @@ class FakeBrowser:
         return FakePage(self.html)
 
 
+class FakeContext:
+    def __init__(self, html, fail=False):
+        self._html, self._fail = html, fail
+
+    async def new_page(self):
+        if self._fail:
+            raise RuntimeError("proxy refused")
+        return FakePage(self._html)
+
+    async def close(self):
+        pass
+
+
+class ProxyFallbackBrowser:
+    """Direct new_page() always fails; proxied contexts succeed."""
+    def __init__(self, html="<p>via proxy</p>", fail_contexts=0):
+        self.html = html
+        self.fail_contexts = fail_contexts   # first N contexts also fail
+        self.contexts = 0
+
+    async def new_page(self):
+        raise RuntimeError("direct blocked")
+
+    async def new_context(self, proxy=None):
+        self.contexts += 1
+        fail = self.contexts <= self.fail_contexts
+        return FakeContext(self.html, fail=fail)
+
+
+class StubProvider:
+    def __init__(self, n=30):
+        self._proxies = [f"socks5://10.0.0.{i}:1080" for i in range(1, n + 1)]
+        self.handed = 0
+
+    async def ensure_loaded(self):
+        pass
+
+    async def acquire(self):
+        if self.handed >= len(self._proxies):
+            return None
+        p = self._proxies[self.handed]
+        self.handed += 1
+        return p
+
+
 def mock_client(handler):
     return httpx.AsyncClient(transport=httpx.MockTransport(handler))
 
@@ -371,3 +416,44 @@ async def test_lookup_online_single_domain():
     assert row["registrar"] == "RegCo"
     assert row["geo_country"] == "US"
     assert row["page_html"] is None
+
+
+# -- proxy fallback tests ------------------------------------------------
+async def test_render_no_provider_unchanged_and_sets_page_proxy_none():
+    out = await render_mod.render_page(FakeBrowser("<h1>hi</h1>"), "example.com")
+    assert out["page_html"] == "<h1>hi</h1>"
+    assert out["page_proxy"] is None
+
+
+async def test_render_falls_back_to_proxy_on_direct_failure():
+    logs = []
+    prov = StubProvider()
+    out = await render_mod.render_page(
+        ProxyFallbackBrowser("<p>ok</p>"), "blocked.com",
+        proxy_provider=prov, log=logs.append)
+    assert out["page_html"] == "<p>ok</p>"
+    assert out["page_proxy"] == "socks5://10.0.0.1:1080"
+    assert any("attempt 1/25" in m and "ok" in m for m in logs)
+
+
+async def test_render_proxy_attempts_capped_at_max():
+    logs = []
+    prov = StubProvider()
+    # every context fails -> exhaust attempts, never succeed
+    out = await render_mod.render_page(
+        ProxyFallbackBrowser(fail_contexts=999), "blocked.com",
+        proxy_provider=prov, max_proxy_attempts=25, log=logs.append)
+    assert out["page_html"] is None
+    assert out["page_proxy"] is None
+    assert prov.handed == 25
+    assert sum(1 for m in logs if "via socks5" in m) == 25
+
+
+async def test_render_stops_when_proxy_pool_exhausted():
+    logs = []
+    prov = StubProvider(n=3)
+    out = await render_mod.render_page(
+        ProxyFallbackBrowser(fail_contexts=999), "blocked.com",
+        proxy_provider=prov, max_proxy_attempts=25, log=logs.append)
+    assert out["page_html"] is None
+    assert prov.handed == 3   # ran out before hitting 25
