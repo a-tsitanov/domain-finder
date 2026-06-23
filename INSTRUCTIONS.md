@@ -407,6 +407,56 @@ domain-enrich run-online \
 - Ключи опциональны: без `--abuse-key`/`--cf-token` эти стадии просто
   пропускаются. Без `--maxmind-*` гео берётся из ip-api (с rate-limit).
 
+### Прокси-fallback при рендере (SOCKS5)
+
+Если страница недоступна напрямую (ошибка соединения/таймаут/навигации),
+рендер **повторяется через бесплатные SOCKS5-прокси** — каждая попытка в своём
+браузерном контексте, **до 25 попыток** на домен. Включено по умолчанию.
+
+- Списки тянутся с `iplocate` → при сбое с `proxifly`, парсятся в `host:port` и
+  **кэшируются на диск** (`work/proxies-socks5.txt`, TTL 6 ч, env `DE_PROXY_CACHE`).
+- Каждая попытка пишется в stderr: `[proxy] <domain> attempt k/25 via socks5://… : ok|<ошибка>`.
+- Сработавший прокси кладётся в досье (`page_proxy`); в сводную таблицу/parquet
+  он **не** попадает (только логи + JSON-досье).
+
+| Опция | Назначение |
+|---|---|
+| `--no-proxy` | выключить прокси-fallback (только прямой заход) |
+| `--proxy-file PATH` | взять локальный список вместо скачивания |
+| `--proxy-list-url URL` | свой URL списка (повторяемо; по умолчанию iplocate+proxifly) |
+| `--proxy-cache PATH` | путь кэша списка (env `DE_PROXY_CACHE`) |
+| `--max-proxy-attempts N` | лимит попыток на домен (по умолчанию 25) |
+
+```bash
+# свой список прокси, не больше 10 попыток:
+domain-enrich run-online --input domains.txt --db work.db \
+    --proxy-file ./socks5.txt --max-proxy-attempts 10
+# совсем без прокси:
+domain-enrich run-online --input domains.txt --db work.db --no-proxy
+```
+
+### Чекер доступности ресурсов
+
+Отдельная команда `check`: на вход список (по ресурсу на строку — домен/URL/IP),
+на выход **два TSV-файла** — доступные и недоступные. Использует **те же
+SOCKS5-прокси**: при ошибке прямого соединения пробует через прокси (до 25
+попыток, лог в stderr). «Доступен» = получен **любой** HTTP-ответ (соединение
+установилось), независимо от кода (200/4xx/5xx).
+
+```bash
+domain-enrich check \
+  --input resources.txt \
+  --success reachable.tsv --failed unreachable.tsv \
+  --concurrency 100 --timeout 15
+#   те же прокси-опции, что у run-online: --no-proxy / --proxy-file /
+#   --proxy-list-url / --proxy-cache / --max-proxy-attempts
+```
+
+- `reachable.tsv`: `resource ⇥ status ⇥ final_url ⇥ via_proxy` (via_proxy пуст, если зашло напрямую).
+- `unreachable.tsv`: `resource ⇥ attempts ⇥ error`.
+- Проверка — лёгкий HTTP-запрос (HEAD, при 405/501 — GET, с follow-redirects),
+  без Playwright. Нужен пакет `socksio` (входит в `.[online]` через `httpx[socks]`).
+
 ### Одно живое досье (без файлов)
 
 ```bash
@@ -425,6 +475,8 @@ docker compose --profile online build runner-online
     --db /work/work.db --dossier-dir /work/dossiers \
     --output /work/agg.parquet --concurrency 100 --render-concurrency 12
 ./scripts/de-online lookup --online --render example.com --json
+./scripts/de-online check --input /input/resources.txt \
+    --success /work/reachable.tsv --failed /work/unreachable.tsv
 ```
 
 ### Диагностика online
@@ -433,7 +485,8 @@ docker compose --profile online build runner-online
 |---|---|
 | гео пустое / медленно | без MaxMind гео идёт через ip-api (45/мин); дай `--maxmind-*` |
 | threat всегда пусто | нет `--abuse-key` (бесплатный на auth.abuse.ch) — стадия пропущена |
-| `page_error` у многих | сайт недоступен/таймаут; подними `--render-concurrency` осторожно (RAM) |
+| `page_error` у многих | сайт недоступен/таймаут. Прокси-fallback включён по умолчанию (до 25 SOCKS5-попыток); смотри `[proxy] …` в stderr. Если прокси мешают/не нужны — `--no-proxy`; для RAM — `--render-concurrency` осторожно |
+| все прокси-попытки падают / `[proxy] loaded 0` | бесплатные списки бывают пустые/мёртвые; дай свой `--proxy-file`, удали устаревший `work/proxies-socks5.txt` или отключи `--no-proxy` |
 | Playwright «unavailable» | не выполнен `python -m playwright install chromium` |
 | RDAP пусто у части доменов | у некоторых TLD нет публичного RDAP — это нормально |
 
