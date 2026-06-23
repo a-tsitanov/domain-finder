@@ -21,6 +21,15 @@ def _split_fields(value: Optional[str]):
     return [f.strip() for f in value.split(",") if f.strip()]
 
 
+def _build_proxy_provider(no_proxy, proxy_file, proxy_list_url, proxy_cache):
+    """Construct a ProxyProvider from shared CLI proxy options (or None)."""
+    if no_proxy:
+        return None
+    from .online.proxy import ProxyProvider
+    urls = list(proxy_list_url) if proxy_list_url else None
+    return ProxyProvider(urls=urls, cache_path=proxy_cache, local_file=proxy_file)
+
+
 # Shared options ---------------------------------------------------------
 _db_opt = click.option("--db", required=True, type=click.Path(),
                        help="Path to the SQLite working database.")
@@ -384,17 +393,32 @@ def lookup(domain, brno_dir, rapid7_fdns, maxmind_city, maxmind_asn, rir_dump,
               help="abuse.ch Auth-Key (URLhaus/ThreatFox). Omit -> threat skipped.")
 @click.option("--cf-token", envvar="DE_CF_RADAR_TOKEN", default=None,
               help="Cloudflare Radar token (popularity). Omit -> skipped.")
+@click.option("--no-proxy", is_flag=True, default=False,
+              help="Disable SOCKS5 proxy fallback when a render fails.")
+@click.option("--proxy-list-url", multiple=True,
+              help="SOCKS5 proxy-list URL (repeatable). Default: iplocate+proxifly.")
+@click.option("--proxy-file", type=click.Path(),
+              help="Use a local SOCKS5 proxy file instead of downloading.")
+@click.option("--proxy-cache", envvar="DE_PROXY_CACHE",
+              default="work/proxies-socks5.txt", show_default=True, type=click.Path(),
+              help="Where to cache the fetched proxy list. Env: DE_PROXY_CACHE")
+@click.option("--max-proxy-attempts", default=25, show_default=True,
+              help="Max proxy retries per page before giving up.")
 @click.option("--force", multiple=True,
               help="Re-run an online stage (e.g. --force online, --force render).")
 def run_online_cmd(input_path, db, dossier_dir, output, fmt, fields, concurrency,
                    render_concurrency, no_render, maxmind_city, maxmind_asn,
-                   ipthreat, abuse_key, cf_token, force):
+                   ipthreat, abuse_key, cf_token, no_proxy, proxy_list_url,
+                   proxy_file, proxy_cache, max_proxy_attempts, force):
     """Online (live) enrichment: live DNS/RDAP/TLS/geo/threat + Playwright page.
 
     Writes one <domain>.dossier.gz per domain (report + rendered HTML) and an
-    optional aggregate table. Fully async and resumable.
+    optional aggregate table. Fully async and resumable. When a render fails,
+    it retries through SOCKS5 proxies (disable with --no-proxy).
     """
     from .online.runner import run_online_sync
+    proxy_provider = _build_proxy_provider(no_proxy, proxy_file, proxy_list_url,
+                                           proxy_cache)
     run_online_sync(
         input_path, db, dossier_dir, output,
         fmt=fmt, fields=_split_fields(fields),
@@ -403,8 +427,50 @@ def run_online_cmd(input_path, db, dossier_dir, output, fmt, fields, concurrency
         maxmind_city=maxmind_city, maxmind_asn=maxmind_asn,
         abuse_key=abuse_key, cf_token=cf_token,
         ipthreat_paths=_expand_paths(ipthreat) if ipthreat else None,
+        proxy_provider=proxy_provider, max_proxy_attempts=max_proxy_attempts,
         force=set(force),
     )
+
+
+@cli.command(name="check")
+@click.option("--input", "input_path", required=True, type=click.Path(exists=True),
+              help="Resource list: one domain/URL/IP per line.")
+@click.option("--success", "success_path", required=True, type=click.Path(),
+              help="TSV output for reachable resources.")
+@click.option("--failed", "failed_path", required=True, type=click.Path(),
+              help="TSV output for unreachable resources.")
+@click.option("--concurrency", default=100, show_default=True,
+              help="Concurrent checks.")
+@click.option("--timeout", default=15.0, show_default=True,
+              help="Per-request timeout (seconds).")
+@click.option("--no-proxy", is_flag=True, default=False,
+              help="Disable SOCKS5 proxy fallback on connection failure.")
+@click.option("--proxy-list-url", multiple=True,
+              help="SOCKS5 proxy-list URL (repeatable). Default: iplocate+proxifly.")
+@click.option("--proxy-file", type=click.Path(),
+              help="Use a local SOCKS5 proxy file instead of downloading.")
+@click.option("--proxy-cache", envvar="DE_PROXY_CACHE",
+              default="work/proxies-socks5.txt", show_default=True, type=click.Path(),
+              help="Where to cache the fetched proxy list. Env: DE_PROXY_CACHE")
+@click.option("--max-proxy-attempts", default=25, show_default=True,
+              help="Max proxy retries per resource before marking it failed.")
+def check_cmd(input_path, success_path, failed_path, concurrency, timeout,
+              no_proxy, proxy_list_url, proxy_file, proxy_cache, max_proxy_attempts):
+    """Check resource availability; write reachable/unreachable TSV files.
+
+    Each resource is probed directly first; on a connection failure it is
+    retried through SOCKS5 proxies (disable with --no-proxy). "Reachable" means
+    any HTTP response was received.
+    """
+    from .online.checker import run_check_sync
+    proxy_provider = _build_proxy_provider(no_proxy, proxy_file, proxy_list_url,
+                                           proxy_cache)
+    summary = run_check_sync(
+        input_path, success_path, failed_path,
+        concurrency=concurrency, proxy_provider=proxy_provider,
+        max_proxy_attempts=max_proxy_attempts, timeout=timeout)
+    click.echo(f"checked {summary['checked']}: {summary['ok']} ok, "
+               f"{summary['failed']} failed")
 
 
 @cli.command(name="fields")

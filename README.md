@@ -323,6 +323,25 @@ domain-enrich lookup --online example.com            # live, all sections
 domain-enrich lookup --online --render example.com --json   # include page_html
 ```
 
+### Proxy fallback & availability checker
+
+Page rendering retries through public SOCKS5 proxies when a site is unreachable
+(up to 25 attempts per domain; proxy use is logged to stderr). Lists are pulled
+from iplocate and proxifly and cached under `work/proxies-socks5.txt`.
+
+    # disable, or point at your own list:
+    domain-enrich run-online --input /input/domains.txt --db /work/work.db --no-proxy
+    domain-enrich run-online --input /input/domains.txt --db /work/work.db \
+        --proxy-file /data/socks5.txt --max-proxy-attempts 10
+
+Check reachability of a list of resources (same proxy pool on failure):
+
+    domain-enrich check --input /input/resources.txt \
+        --success /work/reachable.tsv --failed /work/unreachable.tsv
+
+`reachable.tsv`: `resource  status  final_url  via_proxy`.
+`unreachable.tsv`: `resource  attempts  error`.
+
 ### Containerized online runner
 
 A separate, network-enabled service built on the Playwright image (the offline
