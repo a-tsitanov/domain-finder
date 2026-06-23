@@ -79,6 +79,16 @@ async def test_total_failure_caps_attempts():
     assert res["error"]
 
 
+async def test_500_response_is_available():
+    def handler_for(proxy):
+        return lambda req: httpx.Response(500, request=req)
+    res = await check_resource(_factory(handler_for), "example.com")
+    assert res["ok"] is True
+    assert res["status"] == 500
+    assert res["via_proxy"] is None
+    assert res["attempts"] == 0
+
+
 async def test_run_check_writes_two_tsv_files(tmp_path):
     inp = tmp_path / "list.txt"
     inp.write_text("good.com\nbad.com\n")
